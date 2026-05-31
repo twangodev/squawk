@@ -4,10 +4,11 @@ import csv
 import io
 import re
 import sys
-import zipfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+
+from zipfile_deflate64 import ZipFile
 
 # Some raw ADS-B CSVs carry an unterminated-quote field far past csv's 128 KB default.
 csv.field_size_limit(sys.maxsize)
@@ -75,7 +76,7 @@ def read_pings(raw_zip: Path, date: str) -> list[Ping]:
     """
     prefix = f"{date}/"
     pings: list[Ping] = []
-    with zipfile.ZipFile(raw_zip) as z:
+    with ZipFile(raw_zip) as z:
         members = [
             n for n in z.namelist() if n.startswith(prefix) and n.endswith(".csv")
         ]

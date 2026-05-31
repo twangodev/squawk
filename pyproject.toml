@@ -23,6 +23,7 @@ dependencies = [
   "soundfile>=0.12",
   "soxr>=0.5",
   "joblib>=1.4",
+  "zipfile-deflate64>=0.2",
 ]
 
 [project.scripts]

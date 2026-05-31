@@ -534,6 +534,7 @@ dependencies = [
     { name = "soundfile" },
     { name = "soxr" },
     { name = "typer" },
+    { name = "zipfile-deflate64" },
 ]
 
 [package.dev-dependencies]
@@ -557,6 +558,7 @@ requires-dist = [
     { name = "soundfile", specifier = ">=0.12" },
     { name = "soxr", specifier = ">=0.5" },
     { name = "typer", specifier = ">=0.12" },
+    { name = "zipfile-deflate64", specifier = ">=0.2" },
 ]
 
 [package.metadata.requires-dev]
@@ -646,3 +648,9 @@ sdist = { url = "https://files.pythonhosted.org/packages/dd/b2/381be8cfdee792dd1
 wheels = [
     { url = "https://files.pythonhosted.org/packages/93/8c/2e650f2afeb7ee576912636c23ddb621c91ac6a98e66dc8d29c3c69446e1/werkzeug-3.1.8-py3-none-any.whl", hash = "sha256:63a77fb8892bf28ebc3178683445222aa500e48ebad5ec77b0ad80f8726b1f50", size = 226459, upload-time = "2026-04-02T18:49:12.72Z" },
 ]
+
+[[package]]
+name = "zipfile-deflate64"
+version = "0.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/03/1b/f397f821b48156ee94c5ca7ad82dc5cdb73cbcbc4377b9c1b21556f3ce8c/zipfile-deflate64-0.2.0.tar.gz", hash = "sha256:875a3299de102edf1c17f8cafcc528b1ca80b62dc4814b9cb56867ec59fbfd18", size = 62896, upload-time = "2022-01-05T09:24:39.575Z" }
