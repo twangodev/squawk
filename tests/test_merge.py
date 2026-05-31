@@ -265,7 +265,7 @@ def test_merge_source_writes_partition_and_stats(tmp_path: Path) -> None:
     cfg = load_config(overrides={"mirror_root": tmp_path, "airports": ("kagc",)})
     out_dir = tmp_path / "parquet"
 
-    stats = merge_source("tartanaviation", cfg, out_dir, max_workers=2)
+    stats = merge_source("tartanaviation", cfg, out_dir, max_workers=1)
 
     assert stats == {"clips": 1, "with_adsb": 1, "partitions": 1, "failed": 0}
     part = out_dir / "kagc" / "10-31-21.parquet"

@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import bisect
-import os
-from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+from joblib import Parallel, delayed
 
 from squawk.adsb import Ping, read_pings
 from squawk.clips import Clip, read_clips
@@ -226,23 +225,19 @@ def merge_source(
 ) -> dict:
     """Window-join every `(airport, date)` partition of the mirror to Stage-1 parquet.
 
-    Returns stats `{clips, with_adsb, partitions}`. Partitions whose `part.parquet`
+    Returns stats `{clips, with_adsb, partitions, failed}`. Partitions whose parquet
     already exists are skipped (resumable). Partitions are independent and CPU-bound
-    (CSV parsing, parquet encoding), so they run across a process pool; `max_workers`
-    defaults to `os.cpu_count()`.
+    (CSV parsing, parquet encoding), so they run across a joblib pool; `max_workers`
+    defaults to all cores.
     """
     pending = [
         (part, path)
         for part in _partitions(cfg)
         if not (path := out_dir / part.airport / f"{part.date}.parquet").exists()
     ]
-    workers = max_workers or os.cpu_count() or 1
-    if workers == 1 or len(pending) <= 1:
-        results = [_merge_partition(part, path) for part, path in pending]
-    else:
-        parts, paths = zip(*pending, strict=True)
-        with ProcessPoolExecutor(max_workers=workers) as pool:
-            results = list(pool.map(_merge_partition, parts, paths))
+    results = Parallel(n_jobs=max_workers or -1)(
+        delayed(_merge_partition)(part, path) for part, path in pending
+    )
     return {
         "clips": sum(result.clips for result in results),
         "with_adsb": sum(result.with_adsb for result in results),

@@ -228,10 +228,10 @@ def test_pack_source_preserves_clip_fields(tmp_path: Path) -> None:
     assert record["tracks"] == []
 
 
-def test_pack_source_skips_workers_with_existing_first_shard(tmp_path: Path) -> None:
+def test_pack_source_skips_partitions_with_existing_first_shard(tmp_path: Path) -> None:
     clips_dir, out_dir, mirror_root, _ = _scenario(tmp_path)
     out_dir.mkdir(parents=True)
-    sentinel = out_dir / "shard-000-0000.parquet"
+    sentinel = out_dir / "shard-kagc-10-31-21-0000.parquet"
     sentinel.write_bytes(b"sentinel")
 
     stats = pack_source(
