@@ -26,6 +26,7 @@ from squawk.download import FetchResult, run_mirror
 from squawk.manifest import Manifest, ManifestEntry
 from squawk.merge import merge_source
 from squawk.models import RemoteObject
+from squawk.pack import pack_source
 from squawk.sources import get_source, iter_sources
 from squawk.sources.base import Source
 from squawk.swift import SwiftClient
@@ -160,6 +161,62 @@ def _report_merge(stats: dict, out_dir: Path) -> None:
     )
     if stats.get("failed"):
         _out.print(f"[red]{stats['failed']} partition(s) failed to parse[/red]")
+
+
+@app.command()
+def pack(
+    source: Annotated[
+        str, typer.Argument(help="Registered source, e.g. tartanaviation")
+    ],
+    in_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--in", help="Stage-1 clips dir (default <mirror_root>/parquet/clips)"
+        ),
+    ] = None,
+    out: Annotated[
+        Path | None,
+        typer.Option(help="Packed output dir (default <mirror_root>/parquet/packed)"),
+    ] = None,
+    max_shard_mb: Annotated[
+        int, typer.Option("--max-shard-mb", help="Shard cap by uncompressed audio MB")
+    ] = 250,
+    sample_rate: Annotated[
+        int, typer.Option("--sample-rate", help="Target resample rate (Hz)")
+    ] = 16000,
+    workers: Annotated[int | None, typer.Option(help="Worker concurrency")] = None,
+    store: Annotated[Path | None, typer.Option(help="Mirror root override")] = None,
+) -> None:
+    """Embed resampled 16 kHz WAV bytes into HF-friendly sharded parquet → Stage-2."""
+    _get_source(source)
+    cfg = load_config(overrides=_store_override(store))
+    clips_dir = in_dir if in_dir is not None else cfg.mirror_root / "parquet" / "clips"
+    out_dir = out if out is not None else cfg.mirror_root / "parquet" / "packed"
+
+    stats = pack_source(
+        clips_dir,
+        out_dir,
+        cfg.mirror_root,
+        max_shard_mb=max_shard_mb,
+        sample_rate=sample_rate,
+        max_workers=workers,
+    )
+
+    _report_pack(stats, out_dir)
+    if stats["clips"] == 0:
+        raise typer.Exit(code=1)
+
+
+def _store_override(store: Path | None) -> dict[str, object]:
+    return {"mirror_root": store} if store is not None else {}
+
+
+def _report_pack(stats: dict, out_dir: Path) -> None:
+    mb = stats["bytes"] / 1e6
+    _out.print(
+        f"Packed {stats['clips']} clips into {stats['shards']} shards"
+        f" ({mb:.0f} MB audio) -> {out_dir}"
+    )
 
 
 def _get_source(name: str) -> Source:

@@ -373,3 +373,107 @@ def test_merge_unknown_source_exits_nonzero() -> None:
     result = runner.invoke(cli.app, ["merge", "nope"])
 
     assert result.exit_code != 0
+
+
+def test_pack_reports_stats_and_exits_zero(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_pack(
+        clips_dir: Path,
+        out_dir: Path,
+        mirror_root: Path,
+        *,
+        max_shard_mb: int,
+        sample_rate: int,
+        max_workers: int | None,
+    ) -> dict:
+        captured["clips_dir"] = clips_dir
+        captured["out_dir"] = out_dir
+        captured["mirror_root"] = mirror_root
+        captured["max_shard_mb"] = max_shard_mb
+        captured["sample_rate"] = sample_rate
+        return {"clips": 12, "shards": 3, "bytes": 5_000_000}
+
+    monkeypatch.setattr(cli, "pack_source", _fake_pack)
+
+    result = runner.invoke(
+        cli.app, ["pack", "tartanaviation", "--store", str(tmp_path)]
+    )
+
+    assert result.exit_code == 0
+    assert captured["clips_dir"] == tmp_path / "parquet" / "clips"
+    assert captured["out_dir"] == tmp_path / "parquet" / "packed"
+    assert captured["mirror_root"] == tmp_path
+    assert captured["max_shard_mb"] == 250
+    assert captured["sample_rate"] == 16000
+    assert "12 clips" in result.stdout
+    assert "3 shards" in result.stdout
+
+
+def test_pack_honors_in_out_and_overrides(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_pack(
+        clips_dir: Path,
+        out_dir: Path,
+        mirror_root: Path,
+        *,
+        max_shard_mb: int,
+        sample_rate: int,
+        max_workers: int | None,
+    ) -> dict:
+        captured["clips_dir"] = clips_dir
+        captured["out_dir"] = out_dir
+        captured["max_shard_mb"] = max_shard_mb
+        captured["sample_rate"] = sample_rate
+        return {"clips": 1, "shards": 1, "bytes": 1}
+
+    monkeypatch.setattr(cli, "pack_source", _fake_pack)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "pack",
+            "tartanaviation",
+            "--in",
+            str(tmp_path / "in"),
+            "--out",
+            str(tmp_path / "out"),
+            "--max-shard-mb",
+            "50",
+            "--sample-rate",
+            "8000",
+            "--store",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["clips_dir"] == tmp_path / "in"
+    assert captured["out_dir"] == tmp_path / "out"
+    assert captured["max_shard_mb"] == 50
+    assert captured["sample_rate"] == 8000
+
+
+def test_pack_exits_nonzero_on_zero_clips(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        cli, "pack_source", lambda *a, **k: {"clips": 0, "shards": 0, "bytes": 0}
+    )
+
+    result = runner.invoke(
+        cli.app, ["pack", "tartanaviation", "--store", str(tmp_path)]
+    )
+
+    assert result.exit_code == 1
+
+
+def test_pack_unknown_source_exits_nonzero() -> None:
+    result = runner.invoke(cli.app, ["pack", "nope"])
+
+    assert result.exit_code != 0
