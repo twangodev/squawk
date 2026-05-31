@@ -20,6 +20,8 @@ dependencies = [
   "typer>=0.12",
   "filelock>=3.13",
   "pyarrow>=16",
+  "soundfile>=0.12",
+  "soxr>=0.5",
 ]
 
 [project.scripts]
