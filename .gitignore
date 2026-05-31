@@ -218,3 +218,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# data + model artifacts
+data/
+*.wav
+*.nemo
+*.pt
+outputs/
+.hf_cache/
