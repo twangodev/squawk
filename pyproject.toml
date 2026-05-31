@@ -22,6 +22,7 @@ dependencies = [
   "pyarrow>=16",
   "soundfile>=0.12",
   "soxr>=0.5",
+  "joblib>=1.4",
 ]
 
 [project.scripts]
