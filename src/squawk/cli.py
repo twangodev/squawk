@@ -24,6 +24,7 @@ from squawk.config import RuntimeConfig, VerifyLevel, load_config
 from squawk.constants import SWIFT_ENDPOINT
 from squawk.download import FetchResult, run_mirror
 from squawk.manifest import Manifest, ManifestEntry
+from squawk.merge import merge_source
 from squawk.models import RemoteObject
 from squawk.sources import get_source, iter_sources
 from squawk.sources.base import Source
@@ -105,9 +106,60 @@ def prepare(
 
 
 @app.command()
-def merge(source: str) -> None:
-    """Join audio clips to ADS-B tracks (stub for the first build)."""
-    _out.print(f"merge is not yet implemented for {source!r}")
+def merge(
+    source: Annotated[
+        str, typer.Argument(help="Registered source, e.g. tartanaviation")
+    ],
+    location: Annotated[Location, typer.Option(help="Airport filter")] = Location.ALL,
+    date_range: Annotated[
+        str | None,
+        typer.Option(
+            "--date-range", help="Inclusive MM-DD-YY range, e.g. 10-01-21,10-31-21"
+        ),
+    ] = None,
+    out: Annotated[
+        Path | None,
+        typer.Option(help="Parquet output dir (default <mirror_root>/parquet/clips)"),
+    ] = None,
+    workers: Annotated[int | None, typer.Option(help="Partition concurrency")] = None,
+    store: Annotated[Path | None, typer.Option(help="Mirror root override")] = None,
+) -> None:
+    """Window-join mirrored audio clips to ADS-B tracks → Stage-1 parquet."""
+    _get_source(source)
+    cfg = _merge_config(location, date_range, workers, store)
+    out_dir = out if out is not None else cfg.mirror_root / "parquet" / "clips"
+
+    stats = merge_source(source, cfg, out_dir, max_workers=workers)
+
+    _report_merge(stats, out_dir)
+    if stats["clips"] == 0:
+        raise typer.Exit(code=1)
+
+
+def _merge_config(
+    location: Location, date_range: str | None, workers: int | None, store: Path | None
+) -> RuntimeConfig:
+    overrides: dict[str, object] = {}
+    if location is not Location.ALL:
+        overrides["airports"] = (location.value,)
+    if date_range is not None:
+        overrides["date_range"] = date_range
+    if workers is not None:
+        overrides["max_workers"] = workers
+    if store is not None:
+        overrides["mirror_root"] = store
+    return load_config(overrides=overrides)
+
+
+def _report_merge(stats: dict, out_dir: Path) -> None:
+    clips = stats["clips"]
+    pct = 100 * stats["with_adsb"] / clips if clips else 0.0
+    _out.print(
+        f"Merged {clips} clips across {stats['partitions']} partitions"
+        f" ({pct:.0f}% with ADS-B) -> {out_dir}"
+    )
+    if stats.get("failed"):
+        _out.print(f"[red]{stats['failed']} partition(s) failed to parse[/red]")
 
 
 def _get_source(name: str) -> Source:

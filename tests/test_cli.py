@@ -272,8 +272,104 @@ def test_verify_size_reconciles_selected_against_listing(
     assert "selected 1 of 3 objects listed" in result.stdout
 
 
-def test_merge_is_a_stub_that_exits_zero() -> None:
-    result = runner.invoke(cli.app, ["merge", "tartanaviation"])
+def test_merge_reports_stats_and_exits_zero(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_merge(
+        source: str, cfg: object, out_dir: Path, *, max_workers: int
+    ) -> dict:
+        captured["source"] = source
+        captured["out_dir"] = out_dir
+        return {"clips": 10, "with_adsb": 7, "partitions": 2}
+
+    monkeypatch.setattr(cli, "merge_source", _fake_merge)
+
+    result = runner.invoke(
+        cli.app, ["merge", "tartanaviation", "--store", str(tmp_path)]
+    )
 
     assert result.exit_code == 0
-    assert "not yet implemented" in result.stdout.lower()
+    assert captured["source"] == "tartanaviation"
+    assert captured["out_dir"] == tmp_path / "parquet" / "clips"
+    assert "10 clips" in result.stdout
+    assert "70% with ADS-B" in result.stdout
+    assert "2 partitions" in result.stdout
+
+
+def test_merge_passes_location_and_date_range(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_merge(
+        source: str, cfg: object, out_dir: Path, *, max_workers: int
+    ) -> dict:
+        captured["airports"] = cfg.airports
+        captured["date_range"] = cfg.date_range
+        return {"clips": 1, "with_adsb": 0, "partitions": 1}
+
+    monkeypatch.setattr(cli, "merge_source", _fake_merge)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "merge",
+            "tartanaviation",
+            "--location",
+            "kagc",
+            "--date-range",
+            "10-01-21,10-31-21",
+            "--store",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["airports"] == ("kagc",)
+    assert captured["date_range"] == ("10-01-21", "10-31-21")
+
+
+def test_merge_honors_explicit_out_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_merge(
+        source: str, cfg: object, out_dir: Path, *, max_workers: int
+    ) -> dict:
+        captured["out_dir"] = out_dir
+        return {"clips": 1, "with_adsb": 1, "partitions": 1}
+
+    monkeypatch.setattr(cli, "merge_source", _fake_merge)
+
+    result = runner.invoke(
+        cli.app,
+        ["merge", "tartanaviation", "--out", str(tmp_path / "elsewhere")],
+    )
+
+    assert result.exit_code == 0
+    assert captured["out_dir"] == tmp_path / "elsewhere"
+
+
+def test_merge_exits_nonzero_on_zero_clips(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        cli,
+        "merge_source",
+        lambda *a, **k: {"clips": 0, "with_adsb": 0, "partitions": 0},
+    )
+
+    result = runner.invoke(
+        cli.app, ["merge", "tartanaviation", "--store", str(tmp_path)]
+    )
+
+    assert result.exit_code == 1
+
+
+def test_merge_unknown_source_exits_nonzero() -> None:
+    result = runner.invoke(cli.app, ["merge", "nope"])
+
+    assert result.exit_code != 0
