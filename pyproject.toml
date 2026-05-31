@@ -1,6 +1,6 @@
 [project]
 name = "squawk-atc"
-version = "0.1.0"
+version = "0.0.0"
 description = "Faithful resumable mirror + merge for paired ATC-audio / ADS-B datasets"
 authors = [{ name = "James Ding", email = "james@twango.dev" }]
 readme = "README.md"
