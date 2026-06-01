@@ -26,6 +26,9 @@ dependencies = [
   "zipfile-deflate64>=0.2",
 ]
 
+[project.optional-dependencies]
+vad = ["pyannote.audio>=3.1"]
+
 [project.scripts]
 squawk = "squawk.cli:app"
 
