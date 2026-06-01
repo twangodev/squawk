@@ -85,6 +85,7 @@ def test_segment_source_signature() -> None:
         "sample_rate",
         "segmenter",
         "device",
+        "batch_size",
         "prefetch_workers",
     ]
     assert sig.parameters["max_shard_mb"].default == 250
@@ -97,6 +98,7 @@ def test_segment_source_signature() -> None:
         "sample_rate",
         "segmenter",
         "device",
+        "batch_size",
         "prefetch_workers",
     ):
         assert sig.parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
@@ -112,7 +114,7 @@ def test_explode_clip_signature() -> None:
 
 def test_make_pyannote_segmenter_signature() -> None:
     sig = inspect.signature(make_pyannote_segmenter)
-    assert list(sig.parameters) == ["device", "min_on", "min_off"]
+    assert list(sig.parameters) == ["device", "min_on", "min_off", "batch_size"]
     assert sig.parameters["device"].default == "cuda"
     assert sig.parameters["min_on"].default == 0.15
     assert sig.parameters["min_off"].default == 0.1

@@ -82,15 +82,24 @@ def explode_clip(
 
 
 def make_pyannote_segmenter(
-    device: str = "cuda", min_on: float = 0.15, min_off: float = 0.1
+    device: str = "cuda",
+    min_on: float = 0.15,
+    min_off: float = 0.1,
+    batch_size: int = 1024,
 ) -> Segmenter:
-    """Build a GPU VAD segmenter. Imports torch + pyannote lazily (the `vad` extra)."""
+    """Build a GPU VAD segmenter. Imports torch + pyannote lazily (the `vad` extra).
+
+    `batch_size` is the segmentation Inference window batch — large values run a whole
+    clip's sliding windows in one forward pass (more VRAM, fewer GPU launches).
+    """
     import torch  # ty: ignore[unresolved-import]
     from pyannote.audio.pipelines import (  # ty: ignore[unresolved-import]
         VoiceActivityDetection,
     )
 
-    vad = VoiceActivityDetection(segmentation="pyannote/segmentation-3.0")
+    vad = VoiceActivityDetection(
+        segmentation="pyannote/segmentation-3.0", batch_size=batch_size
+    )
     vad.instantiate({"min_duration_on": min_on, "min_duration_off": min_off})
     vad.to(torch.device(device))
 
@@ -164,6 +173,7 @@ def segment_source(
     sample_rate: int = 16000,
     segmenter: Segmenter | None = None,
     device: str = "cuda",
+    batch_size: int = 1024,
     prefetch_workers: int = 8,
 ) -> dict:
     """VAD-split every packed clip into utterances → embedded sharded parquet (Stage-3).
@@ -181,7 +191,7 @@ def segment_source(
     if out_dir.joinpath("shard-00000.parquet").exists():
         return {"clips": 0, "utterances": 0, "shards": 0, "bytes": 0}
     if segmenter is None:
-        segmenter = make_pyannote_segmenter(device)
+        segmenter = make_pyannote_segmenter(device, batch_size=batch_size)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     threshold = max_shard_mb * _BYTES_PER_MB

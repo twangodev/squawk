@@ -239,6 +239,9 @@ def segment(
     device: Annotated[
         str, typer.Option("--device", help="Torch device for the VAD segmenter")
     ] = "cuda",
+    batch_size: Annotated[
+        int, typer.Option("--batch-size", help="VAD window batch size (GPU)")
+    ] = 1024,
 ) -> None:
     """VAD-split each packed clip into utterances → embedded sharded parquet → Stage-3."""
     stats = segment_source(
@@ -247,6 +250,7 @@ def segment(
         max_shard_mb=max_shard_mb,
         sample_rate=sample_rate,
         device=device,
+        batch_size=batch_size,
     )
 
     _report_segment(stats, out)

@@ -491,6 +491,7 @@ def test_segment_reports_stats_and_exits_zero(
         max_shard_mb: int,
         sample_rate: int,
         device: str,
+        batch_size: int,
     ) -> dict:
         captured["source"] = source
         captured["out_dir"] = out_dir
@@ -525,6 +526,7 @@ def test_segment_accepts_hf_repo_id_and_overrides(
         max_shard_mb: int,
         sample_rate: int,
         device: str,
+        batch_size: int,
     ) -> dict:
         captured["source"] = source
         captured["out_dir"] = out_dir
