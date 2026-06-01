@@ -27,7 +27,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-vad = ["pyannote.audio>=3.1"]
+vad = ["pyannote.audio>=3.1", "datasets>=2.19"]
 
 [project.scripts]
 squawk = "squawk.cli:app"
