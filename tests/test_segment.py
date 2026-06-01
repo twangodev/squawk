@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import sys
-import zipfile
+import types
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
@@ -11,14 +11,17 @@ from pathlib import Path
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 import soundfile as sf
 
+from squawk.audio import encode_wav
 from squawk.merge import CLIP_SCHEMA
 from squawk.pack import PACKED_SCHEMA
 from squawk.segment import (
     UTTERANCE_SCHEMA,
     Segmenter,
     explode_clip,
+    iter_packed_clips,
     make_pyannote_segmenter,
     segment_source,
 )
@@ -76,26 +79,25 @@ def test_utterance_id_follows_clip_id_and_offset_follows_tracks() -> None:
 def test_segment_source_signature() -> None:
     sig = inspect.signature(segment_source)
     assert list(sig.parameters) == [
-        "clips_dir",
+        "source",
         "out_dir",
-        "mirror_root",
-        "sample_rate",
         "max_shard_mb",
+        "sample_rate",
         "segmenter",
         "device",
-        "max_decode_workers",
+        "prefetch_workers",
     ]
-    assert sig.parameters["sample_rate"].default == 16000
     assert sig.parameters["max_shard_mb"].default == 250
+    assert sig.parameters["sample_rate"].default == 16000
     assert sig.parameters["segmenter"].default is None
     assert sig.parameters["device"].default == "cuda"
-    assert sig.parameters["max_decode_workers"].default == 8
+    assert sig.parameters["prefetch_workers"].default == 8
     for name in (
-        "sample_rate",
         "max_shard_mb",
+        "sample_rate",
         "segmenter",
         "device",
-        "max_decode_workers",
+        "prefetch_workers",
     ):
         assert sig.parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
     assert sig.return_annotation == "dict"
@@ -218,33 +220,27 @@ def test_explode_clip_rows_match_utterance_schema() -> None:
     assert table.num_rows == 1
 
 
-SRC_RATE = 44100
-
-
-def _sine(seconds: float, freq: float = 200.0) -> np.ndarray:
-    t = np.arange(int(seconds * SRC_RATE), dtype=np.float32) / SRC_RATE
+def _sine16(seconds: float, freq: float = 200.0) -> np.ndarray:
+    t = np.arange(int(seconds * SAMPLE_RATE), dtype=np.float32) / SAMPLE_RATE
     return (0.5 * np.sin(2 * np.pi * freq * t)).astype(np.float32)
 
 
-def _build_clip_zip(mirror_root: Path, airport: str, date: str, n: str) -> None:
-    member_dir = f"{date}_audio"
-    zip_path = mirror_root / "audio" / airport / "2021" / "10" / f"{member_dir}.zip"
-    zip_path.parent.mkdir(parents=True, exist_ok=True)
-    buf = BytesIO()
-    sf.write(buf, _sine(10.0), SRC_RATE, subtype="FLOAT", format="WAV")
-    with zipfile.ZipFile(zip_path, "w") as archive:
-        archive.writestr(f"{member_dir}/{n}.wav", buf.getvalue())
-
-
-def _build_stage1_parquet(clips_dir: Path, airport: str, date: str, n: str) -> None:
+def _packed_record(airport: str, date: str, n: str) -> dict:
     record = _clip_record()
     record["airport"] = airport
     record["date"] = date
     record["clip_id"] = f"{airport}/{date}/{n}"
-    record["audio"] = f"audio/{airport}/2021/10/{date}_audio/{n}.wav"
-    out = clips_dir / airport / f"{date}.parquet"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(pa.Table.from_pylist([record], schema=CLIP_SCHEMA), out)
+    record["audio"] = {
+        "bytes": encode_wav(_sine16(10.0), SAMPLE_RATE, SAMPLE_RATE),
+        "path": f"{airport}/{date}/{n}.wav",
+    }
+    return record
+
+
+def _build_packed_shard(packed_dir: Path, name: str, records: list[dict]) -> None:
+    packed_dir.mkdir(parents=True, exist_ok=True)
+    table = pa.Table.from_pylist(records, schema=PACKED_SCHEMA)
+    pq.write_table(table, packed_dir / name)
 
 
 def _fixed_spans_segmenter(spans: list[tuple[float, float]]) -> Segmenter:
@@ -254,22 +250,80 @@ def _fixed_spans_segmenter(spans: list[tuple[float, float]]) -> Segmenter:
     return segment
 
 
-def _scenario(tmp_path: Path) -> tuple[Path, Path, Path]:
-    clips_dir = tmp_path / "clips"
+def _scenario(tmp_path: Path) -> tuple[Path, Path]:
+    packed_dir = tmp_path / "packed"
     out_dir = tmp_path / "utterances"
-    mirror_root = tmp_path / "mirror"
-    _build_clip_zip(mirror_root, "kagc", "10-31-21", "7")
-    _build_stage1_parquet(clips_dir, "kagc", "10-31-21", "7")
-    return clips_dir, out_dir, mirror_root
+    _build_packed_shard(
+        packed_dir, "shard-00000.parquet", [_packed_record("kagc", "10-31-21", "7")]
+    )
+    return packed_dir, out_dir
+
+
+def test_iter_packed_clips_local_dir_yields_rows(tmp_path: Path) -> None:
+    packed_dir = tmp_path / "packed"
+    _build_packed_shard(
+        packed_dir / "kagc",
+        "shard-00000.parquet",
+        [_packed_record("kagc", "10-31-21", "7")],
+    )
+    _build_packed_shard(
+        packed_dir / "kbtp",
+        "shard-00000.parquet",
+        [_packed_record("kbtp", "10-31-21", "3")],
+    )
+
+    rows = list(iter_packed_clips(packed_dir))
+
+    assert {row["clip_id"] for row in rows} == {"kagc/10-31-21/7", "kbtp/10-31-21/3"}
+    for row in rows:
+        assert isinstance(row["audio"]["bytes"], bytes)
+        decoded, rate = sf.read(BytesIO(row["audio"]["bytes"]), dtype="int16")
+        assert rate == SAMPLE_RATE
+        assert len(row["tracks"]) == 2
+
+
+def test_iter_packed_clips_treats_missing_path_as_hf_repo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import squawk.segment as segment_mod
+
+    rows = [_packed_record("kagc", "10-31-21", "7")]
+    captured: dict[str, object] = {}
+
+    class _FakeDataset:
+        def cast_column(self, name: str, audio: object) -> _FakeDataset:
+            captured["cast"] = name
+            return self
+
+        def __iter__(self) -> object:
+            return iter(rows)
+
+    def _fake_load_dataset(repo_id: str, split: str, streaming: bool) -> _FakeDataset:
+        captured["repo_id"] = repo_id
+        captured["split"] = split
+        captured["streaming"] = streaming
+        return _FakeDataset()
+
+    fake_datasets = types.ModuleType("datasets")
+    fake_datasets.load_dataset = _fake_load_dataset  # type: ignore[attr-defined]
+    fake_datasets.Audio = lambda decode: ("Audio", decode)  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "datasets", fake_datasets)
+
+    yielded = list(segment_mod.iter_packed_clips("twangodev/tartanaviation-atc-adsb"))
+
+    assert captured["repo_id"] == "twangodev/tartanaviation-atc-adsb"
+    assert captured["split"] == "train"
+    assert captured["streaming"] is True
+    assert captured["cast"] == "audio"
+    assert [row["clip_id"] for row in yielded] == ["kagc/10-31-21/7"]
 
 
 def test_segment_source_writes_utterance_shards_and_stats(tmp_path: Path) -> None:
-    clips_dir, out_dir, mirror_root = _scenario(tmp_path)
+    packed_dir, out_dir = _scenario(tmp_path)
 
     stats = segment_source(
-        clips_dir,
+        packed_dir,
         out_dir,
-        mirror_root,
         max_shard_mb=1,
         segmenter=_fixed_spans_segmenter([(0.0, 2.0), (6.0, 8.0)]),
     )
@@ -282,13 +336,12 @@ def test_segment_source_writes_utterance_shards_and_stats(tmp_path: Path) -> Non
     assert stats["bytes"] > 0
 
 
-def test_segment_source_shards_reload_and_decode(tmp_path: Path) -> None:
-    clips_dir, out_dir, mirror_root = _scenario(tmp_path)
+def test_segment_source_shards_reload_decode_and_rewindow(tmp_path: Path) -> None:
+    packed_dir, out_dir = _scenario(tmp_path)
 
     segment_source(
-        clips_dir,
+        packed_dir,
         out_dir,
-        mirror_root,
         max_shard_mb=1,
         segmenter=_fixed_spans_segmenter([(0.0, 2.0), (6.0, 8.0)]),
     )
@@ -302,39 +355,40 @@ def test_segment_source_shards_reload_and_decode(tmp_path: Path) -> None:
         "kagc/10-31-21/7/0",
         "kagc/10-31-21/7/1",
     ]
+    assert [t["tail"] for t in records[0]["tracks"]] == ["N1"]
+    assert [t["tail"] for t in records[1]["tracks"]] == ["N2"]
     for record in records:
         decoded, rate = sf.read(BytesIO(record["audio"]["bytes"]), dtype="int16")
         assert rate == SAMPLE_RATE
         assert len(decoded) > 0
 
 
-def test_segment_source_tiny_cap_forces_a_shard_per_utterance(tmp_path: Path) -> None:
-    clips_dir, out_dir, mirror_root = _scenario(tmp_path)
+def test_segment_source_names_shards_sequentially(tmp_path: Path) -> None:
+    packed_dir, out_dir = _scenario(tmp_path)
 
     stats = segment_source(
-        clips_dir,
+        packed_dir,
         out_dir,
-        mirror_root,
         max_shard_mb=0,
         segmenter=_fixed_spans_segmenter([(0.0, 2.0), (6.0, 8.0)]),
     )
 
     assert stats["shards"] == 2
-    assert len(sorted(out_dir.glob("shard-*.parquet"))) == 2
+    assert sorted(p.name for p in out_dir.glob("shard-*.parquet")) == [
+        "shard-00000.parquet",
+        "shard-00001.parquet",
+    ]
 
 
-def test_segment_source_skips_partition_with_existing_first_shard(
-    tmp_path: Path,
-) -> None:
-    clips_dir, out_dir, mirror_root = _scenario(tmp_path)
+def test_segment_source_skips_when_first_shard_exists(tmp_path: Path) -> None:
+    packed_dir, out_dir = _scenario(tmp_path)
     out_dir.mkdir(parents=True)
-    sentinel = out_dir / "shard-kagc-10-31-21-0000.parquet"
+    sentinel = out_dir / "shard-00000.parquet"
     sentinel.write_bytes(b"sentinel")
 
     stats = segment_source(
-        clips_dir,
+        packed_dir,
         out_dir,
-        mirror_root,
         max_shard_mb=1,
         segmenter=_fixed_spans_segmenter([(0.0, 2.0)]),
     )

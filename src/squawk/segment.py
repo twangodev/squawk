@@ -1,21 +1,20 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from collections import deque
+from collections.abc import Callable, Iterator
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import timedelta
+from io import BytesIO
 from pathlib import Path
 
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
-import soxr
+import soundfile as sf
 
-from squawk.audio import encode_wav, load_clip_samples
+from squawk.audio import encode_wav
 from squawk.merge import _PARQUET_COMPRESSION, CLIP_SCHEMA
-from squawk.pack import _AUDIO_STRUCT, _BYTES_PER_MB, _partition_files, _shard_path
-
-_RESAMPLE_QUALITY = "VHQ"
+from squawk.pack import _AUDIO_STRUCT, _BYTES_PER_MB
 
 Segmenter = Callable[[np.ndarray, int], list[tuple[float, float]]]
 
@@ -36,12 +35,6 @@ def _utterance_fields() -> list[pa.Field]:
 
 
 UTTERANCE_SCHEMA: pa.Schema = pa.schema(_utterance_fields())
-
-
-def _resample(samples: np.ndarray, src_rate: int, target_rate: int) -> np.ndarray:
-    if src_rate == target_rate:
-        return samples
-    return soxr.resample(samples, src_rate, target_rate, quality=_RESAMPLE_QUALITY)
 
 
 def _utterance_row(
@@ -109,32 +102,86 @@ def make_pyannote_segmenter(
     return segment
 
 
+def iter_packed_clips(source: str | Path) -> Iterator[dict]:
+    """Yield packed clip rows from a local shard dir or a streamed HF dataset.
+
+    A directory yields each row of every `*.parquet` shard beneath it (sorted, recursive)
+    via pyarrow. Any other string is treated as an HF repo id and streamed lazily with
+    `datasets` (the `vad` extra), `decode=False` so `audio` stays raw `{bytes, path}`.
+    """
+    if Path(source).is_dir():
+        for shard in sorted(Path(source).rglob("*.parquet")):
+            for batch in pq.read_table(shard).to_batches():
+                yield from batch.to_pylist()
+        return
+    from datasets import Audio, load_dataset  # ty: ignore[unresolved-import]
+
+    yield from load_dataset(str(source), split="train", streaming=True).cast_column(
+        "audio", Audio(decode=False)
+    )
+
+
+def _decode(record: dict, sample_rate: int) -> tuple[dict, np.ndarray]:
+    samples, _ = sf.read(BytesIO(record["audio"]["bytes"]), dtype="float32")
+    return record, samples
+
+
+def _prefetched_decode(
+    records: Iterator[dict], sample_rate: int, workers: int
+) -> Iterator[tuple[dict, np.ndarray]]:
+    """Decode audio with bounded look-ahead: at most ~`workers` clips are held at once.
+
+    A plain `pool.map` would submit the whole iterator eagerly — fine for a small dir, but
+    it would drain an entire HF stream into memory. This keeps the window bounded.
+    """
+    source = iter(records)
+    pending: deque[Future[tuple[dict, np.ndarray]]] = deque()
+    with ThreadPoolExecutor(workers) as pool:
+
+        def submit_next() -> None:
+            record = next(source, None)
+            if record is not None:
+                pending.append(pool.submit(_decode, record, sample_rate))
+
+        for _ in range(workers * 2):
+            submit_next()
+        while pending:
+            future = pending.popleft()
+            submit_next()
+            yield future.result()
+
+
 def _write_shard(rows: list[dict], path: Path) -> None:
     table = pa.Table.from_pylist(rows, schema=UTTERANCE_SCHEMA)
     pq.write_table(table, path, compression=_PARQUET_COMPRESSION)
 
 
-@dataclass(frozen=True, slots=True)
-class _FileStats:
-    clips: int
-    utterances: int
-    shards: int
-    bytes: int
-
-
-def _segment_file(
-    file: Path,
+def segment_source(
+    source: str | Path,
     out_dir: Path,
-    mirror_root: Path,
-    segmenter: Segmenter,
-    sample_rate: int,
-    max_shard_mb: int,
-    max_decode_workers: int,
-) -> _FileStats:
-    """Explode one Stage-1 partition's clips into utterance shards, GPU-fed by prefetch."""
-    airport, date = file.parent.name, file.stem
-    if _shard_path(out_dir, airport, date, 0).exists():
-        return _FileStats(clips=0, utterances=0, shards=0, bytes=0)
+    *,
+    max_shard_mb: int = 250,
+    sample_rate: int = 16000,
+    segmenter: Segmenter | None = None,
+    device: str = "cuda",
+    prefetch_workers: int = 8,
+) -> dict:
+    """VAD-split every packed clip into utterances → embedded sharded parquet (Stage-3).
+
+    Consumes the packed dataset (`source` is a local shard dir or an HF repo id), decodes
+    each clip's already-16 kHz embedded WAV bytes to a mono float32 array — no resample —
+    prefetched across `prefetch_workers` threads to keep the GPU fed while `segmenter` runs
+    sequentially on the single device. Each clip explodes into one utterance row per speech
+    span: sliced 16-bit PCM WAV bytes plus ADS-B re-windowed to the span. Writes zstd
+    `UTTERANCE_SCHEMA` shards (each below `max_shard_mb` of accumulated audio) named
+    `shard-{k:05d}.parquet`. `segmenter` defaults to `make_pyannote_segmenter(device)`.
+    Resumable: skipped entirely if `shard-00000.parquet` already exists. Returns
+    `{clips, utterances, shards, bytes}`.
+    """
+    if out_dir.joinpath("shard-00000.parquet").exists():
+        return {"clips": 0, "utterances": 0, "shards": 0, "bytes": 0}
+    if segmenter is None:
+        segmenter = make_pyannote_segmenter(device)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     threshold = max_shard_mb * _BYTES_PER_MB
@@ -144,72 +191,28 @@ def _segment_file(
     def flush() -> None:
         nonlocal rows, pending_bytes, shards
         if rows:
-            _write_shard(rows, _shard_path(out_dir, airport, date, shards))
+            _write_shard(rows, out_dir / f"shard-{shards:05d}.parquet")
             shards += 1
             rows = []
             pending_bytes = 0
 
-    def decode(record: dict) -> tuple[dict, np.ndarray]:
-        samples, src_rate = load_clip_samples(mirror_root, record["audio"])
-        return record, _resample(samples, src_rate, sample_rate)
-
-    records = pq.read_table(file).to_pylist()
-    with ThreadPoolExecutor(max_decode_workers) as pool:
-        for record, audio16 in pool.map(decode, records):
-            spans = segmenter(audio16, sample_rate)
-            for row in explode_clip(record, audio16, spans, sample_rate):
-                rows.append(row)
-                utterances += 1
-                total_bytes += len(row["audio"]["bytes"])
-                pending_bytes += len(row["audio"]["bytes"])
-                if pending_bytes >= threshold:
-                    flush()
-            clips += 1
-    flush()
-    return _FileStats(
-        clips=clips, utterances=utterances, shards=shards, bytes=total_bytes
+    decoded = _prefetched_decode(
+        iter_packed_clips(source), sample_rate, prefetch_workers
     )
-
-
-def segment_source(
-    clips_dir: Path,
-    out_dir: Path,
-    mirror_root: Path,
-    *,
-    sample_rate: int = 16000,
-    max_shard_mb: int = 250,
-    segmenter: Segmenter | None = None,
-    device: str = "cuda",
-    max_decode_workers: int = 8,
-) -> dict:
-    """VAD-split every Stage-1 clip into utterances → embedded sharded parquet (Stage-3).
-
-    Reads the clip parquet under `clips_dir`, decodes and resamples each clip's source
-    wav to `sample_rate` (prefetched across `max_decode_workers` threads to keep the GPU
-    fed), runs `segmenter` sequentially on the single device to get speech spans, and
-    explodes each clip into one utterance row per span — sliced 16-bit PCM WAV bytes plus
-    ADS-B re-windowed to the utterance span. Writes zstd `UTTERANCE_SCHEMA` shards (each
-    below `max_shard_mb` of accumulated audio) named `shard-{airport}-{date}-{k}.parquet`.
-    `segmenter` defaults to `make_pyannote_segmenter(device)`. Resumable: a partition whose
-    first shard already exists is skipped. Returns `{clips, utterances, shards, bytes}`.
-    """
-    if segmenter is None:
-        segmenter = make_pyannote_segmenter(device)
-    results = [
-        _segment_file(
-            file,
-            out_dir,
-            mirror_root,
-            segmenter,
-            sample_rate,
-            max_shard_mb,
-            max_decode_workers,
-        )
-        for file in _partition_files(clips_dir)
-    ]
+    for record, audio16 in decoded:
+        spans = segmenter(audio16, sample_rate)
+        for row in explode_clip(record, audio16, spans, sample_rate):
+            rows.append(row)
+            utterances += 1
+            total_bytes += len(row["audio"]["bytes"])
+            pending_bytes += len(row["audio"]["bytes"])
+            if pending_bytes >= threshold:
+                flush()
+        clips += 1
+    flush()
     return {
-        "clips": sum(result.clips for result in results),
-        "utterances": sum(result.utterances for result in results),
-        "shards": sum(result.shards for result in results),
-        "bytes": sum(result.bytes for result in results),
+        "clips": clips,
+        "utterances": utterances,
+        "shards": shards,
+        "bytes": total_bytes,
     }

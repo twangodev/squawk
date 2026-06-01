@@ -223,47 +223,33 @@ def _report_pack(stats: dict, out_dir: Path) -> None:
 @app.command()
 def segment(
     source: Annotated[
-        str, typer.Argument(help="Registered source, e.g. tartanaviation")
+        str,
+        typer.Argument(help="Packed parquet dir or HF repo id (e.g. owner/name)"),
     ],
-    in_dir: Annotated[
-        Path | None,
-        typer.Option(
-            "--in", help="Stage-1 clips dir (default <mirror_root>/parquet/clips)"
-        ),
-    ] = None,
     out: Annotated[
-        Path | None,
-        typer.Option(
-            help="Utterance output dir (default <mirror_root>/parquet/utterances)"
-        ),
-    ] = None,
+        Path,
+        typer.Option(help="Utterance output dir"),
+    ] = Path("parquet/utterances"),
     max_shard_mb: Annotated[
         int, typer.Option("--max-shard-mb", help="Shard cap by uncompressed audio MB")
     ] = 250,
     sample_rate: Annotated[
-        int, typer.Option("--sample-rate", help="Target resample rate (Hz)")
+        int, typer.Option("--sample-rate", help="Embedded audio rate (Hz)")
     ] = 16000,
     device: Annotated[
         str, typer.Option("--device", help="Torch device for the VAD segmenter")
     ] = "cuda",
-    store: Annotated[Path | None, typer.Option(help="Mirror root override")] = None,
 ) -> None:
-    """VAD-split each clip into utterances → embedded sharded parquet → Stage-3."""
-    _get_source(source)
-    cfg = load_config(overrides=_store_override(store))
-    clips_dir = in_dir if in_dir is not None else cfg.mirror_root / "parquet" / "clips"
-    out_dir = out if out is not None else cfg.mirror_root / "parquet" / "utterances"
-
+    """VAD-split each packed clip into utterances → embedded sharded parquet → Stage-3."""
     stats = segment_source(
-        clips_dir,
-        out_dir,
-        cfg.mirror_root,
-        sample_rate=sample_rate,
+        source,
+        out,
         max_shard_mb=max_shard_mb,
+        sample_rate=sample_rate,
         device=device,
     )
 
-    _report_segment(stats, out_dir)
+    _report_segment(stats, out)
     if stats["clips"] == 0:
         raise typer.Exit(code=1)
 

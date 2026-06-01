@@ -485,32 +485,27 @@ def test_segment_reports_stats_and_exits_zero(
     captured: dict[str, object] = {}
 
     def _fake_segment(
-        clips_dir: Path,
+        source: str,
         out_dir: Path,
-        mirror_root: Path,
         *,
-        sample_rate: int,
         max_shard_mb: int,
+        sample_rate: int,
         device: str,
     ) -> dict:
-        captured["clips_dir"] = clips_dir
+        captured["source"] = source
         captured["out_dir"] = out_dir
-        captured["mirror_root"] = mirror_root
-        captured["sample_rate"] = sample_rate
         captured["max_shard_mb"] = max_shard_mb
+        captured["sample_rate"] = sample_rate
         captured["device"] = device
         return {"clips": 4, "utterances": 11, "shards": 2, "bytes": 6_000_000}
 
     monkeypatch.setattr(cli, "segment_source", _fake_segment)
 
-    result = runner.invoke(
-        cli.app, ["segment", "tartanaviation", "--store", str(tmp_path)]
-    )
+    result = runner.invoke(cli.app, ["segment", str(tmp_path / "packed")])
 
     assert result.exit_code == 0
-    assert captured["clips_dir"] == tmp_path / "parquet" / "clips"
-    assert captured["out_dir"] == tmp_path / "parquet" / "utterances"
-    assert captured["mirror_root"] == tmp_path
+    assert captured["source"] == str(tmp_path / "packed")
+    assert captured["out_dir"] == Path("parquet/utterances")
     assert captured["sample_rate"] == 16000
     assert captured["max_shard_mb"] == 250
     assert captured["device"] == "cuda"
@@ -518,24 +513,23 @@ def test_segment_reports_stats_and_exits_zero(
     assert "2 shards" in result.stdout
 
 
-def test_segment_honors_in_out_and_overrides(
+def test_segment_accepts_hf_repo_id_and_overrides(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     captured: dict[str, object] = {}
 
     def _fake_segment(
-        clips_dir: Path,
+        source: str,
         out_dir: Path,
-        mirror_root: Path,
         *,
-        sample_rate: int,
         max_shard_mb: int,
+        sample_rate: int,
         device: str,
     ) -> dict:
-        captured["clips_dir"] = clips_dir
+        captured["source"] = source
         captured["out_dir"] = out_dir
-        captured["sample_rate"] = sample_rate
         captured["max_shard_mb"] = max_shard_mb
+        captured["sample_rate"] = sample_rate
         captured["device"] = device
         return {"clips": 1, "utterances": 1, "shards": 1, "bytes": 1}
 
@@ -545,9 +539,7 @@ def test_segment_honors_in_out_and_overrides(
         cli.app,
         [
             "segment",
-            "tartanaviation",
-            "--in",
-            str(tmp_path / "in"),
+            "twangodev/tartanaviation-atc-adsb",
             "--out",
             str(tmp_path / "out"),
             "--max-shard-mb",
@@ -556,13 +548,11 @@ def test_segment_honors_in_out_and_overrides(
             "8000",
             "--device",
             "cpu",
-            "--store",
-            str(tmp_path),
         ],
     )
 
     assert result.exit_code == 0
-    assert captured["clips_dir"] == tmp_path / "in"
+    assert captured["source"] == "twangodev/tartanaviation-atc-adsb"
     assert captured["out_dir"] == tmp_path / "out"
     assert captured["max_shard_mb"] == 50
     assert captured["sample_rate"] == 8000
@@ -578,14 +568,6 @@ def test_segment_exits_nonzero_on_zero_clips(
         lambda *a, **k: {"clips": 0, "utterances": 0, "shards": 0, "bytes": 0},
     )
 
-    result = runner.invoke(
-        cli.app, ["segment", "tartanaviation", "--store", str(tmp_path)]
-    )
+    result = runner.invoke(cli.app, ["segment", str(tmp_path / "packed")])
 
     assert result.exit_code == 1
-
-
-def test_segment_unknown_source_exits_nonzero() -> None:
-    result = runner.invoke(cli.app, ["segment", "nope"])
-
-    assert result.exit_code != 0
