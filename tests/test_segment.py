@@ -174,30 +174,29 @@ def test_explode_clip_one_row_per_span_with_ids_and_offset() -> None:
     assert rows[0]["airport"] == "kagc"
 
 
-def test_explode_clip_rewindows_tracks_per_span() -> None:
+def test_explode_clip_inherits_full_clip_adsb() -> None:
     record = _clip_record()
     spans = [(0.0, 2.0), (6.0, 8.0)]
 
     rows = explode_clip(record, _ramp(10.0), spans, SAMPLE_RATE)
 
-    first, second = rows
-    assert [t["tail"] for t in first["tracks"]] == ["N1"]
-    assert first["tails"] == ["N1"]
-    assert first["n_aircraft"] == 1
-    assert [t["tail"] for t in second["tracks"]] == ["N2"]
-    assert second["tails"] == ["N2"]
-    assert second["n_aircraft"] == 1
+    for row in rows:
+        assert row["n_aircraft"] == 2
+        assert row["tails"] == ["N1", "N2"]
+        assert [t["tail"] for t in row["tracks"]] == ["N1", "N2"]
 
 
-def test_explode_clip_excludes_track_outside_span() -> None:
+def test_explode_clip_keeps_clip_adsb_when_span_has_no_ping() -> None:
     record = _clip_record()
-    spans = [(2.0, 5.0)]
+    spans = [
+        (2.0, 5.0)
+    ]  # no ping in this window, but the clip's aircraft are still inherited
 
     rows = explode_clip(record, _ramp(10.0), spans, SAMPLE_RATE)
 
-    assert rows[0]["tracks"] == []
-    assert rows[0]["tails"] == []
-    assert rows[0]["n_aircraft"] == 0
+    assert rows[0]["n_aircraft"] == 2
+    assert rows[0]["tails"] == ["N1", "N2"]
+    assert len(rows[0]["tracks"]) == 2
 
 
 def test_explode_clip_audio_slices_and_decodes_at_16k() -> None:
@@ -338,7 +337,7 @@ def test_segment_source_writes_utterance_shards_and_stats(tmp_path: Path) -> Non
     assert stats["bytes"] > 0
 
 
-def test_segment_source_shards_reload_decode_and_rewindow(tmp_path: Path) -> None:
+def test_segment_source_shards_reload_decode_and_inherit_adsb(tmp_path: Path) -> None:
     packed_dir, out_dir = _scenario(tmp_path)
 
     segment_source(
@@ -357,8 +356,8 @@ def test_segment_source_shards_reload_decode_and_rewindow(tmp_path: Path) -> Non
         "kagc/10-31-21/7/0",
         "kagc/10-31-21/7/1",
     ]
-    assert [t["tail"] for t in records[0]["tracks"]] == ["N1"]
-    assert [t["tail"] for t in records[1]["tracks"]] == ["N2"]
+    for record in records:  # every utterance inherits the clip's full ADS-B
+        assert [t["tail"] for t in record["tracks"]] == ["N1", "N2"]
     for record in records:
         decoded, rate = sf.read(BytesIO(record["audio"]["bytes"]), dtype="int16")
         assert rate == SAMPLE_RATE

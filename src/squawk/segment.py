@@ -46,20 +46,15 @@ def _utterance_row(
 ) -> dict:
     start_s, end_s = span
     segment = audio16[int(start_s * sample_rate) : int(end_s * sample_rate)]
-    u_start = clip_record["start"] + timedelta(seconds=start_s)
-    u_end = clip_record["start"] + timedelta(seconds=end_s)
-    tracks = [t for t in clip_record["tracks"] if u_start <= t["t"] <= u_end]
-    tails = sorted({t["tail"] for t in tracks})
     utterance_id = f"{clip_record['clip_id']}/{index}"
+    # Inherit the clip's full ADS-B (n_aircraft, tails, tracks): the speaker is one of the
+    # aircraft in the geofence during the capture, so the whole-clip vicinity is the signal.
     return {
         **clip_record,
         "utterance_id": utterance_id,
-        "start": u_start,
-        "end": u_end,
+        "start": clip_record["start"] + timedelta(seconds=start_s),
+        "end": clip_record["start"] + timedelta(seconds=end_s),
         "duration_s": end_s - start_s,
-        "n_aircraft": len(tails),
-        "tails": tails,
-        "tracks": tracks,
         "clip_offset_s": start_s,
         "audio": {
             "bytes": encode_wav(segment, sample_rate, sample_rate),
@@ -74,7 +69,7 @@ def explode_clip(
     spans: list[tuple[float, float]],
     sample_rate: int = 16000,
 ) -> list[dict]:
-    """Expand one clip into a row per speech span: sliced WAV + re-windowed ADS-B."""
+    """Expand one clip into a row per speech span: sliced WAV + the clip's inherited ADS-B."""
     return [
         _utterance_row(clip_record, audio16, span, index, sample_rate)
         for index, span in enumerate(spans)
